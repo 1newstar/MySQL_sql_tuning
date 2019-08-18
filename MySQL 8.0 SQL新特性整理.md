@@ -1,0 +1,734 @@
+[TOC]
+
+# MySQL 8.0 SQL新特性整理
+
+## CTE
+
+```SQL
+案例：
+select u.id,u.username,u.realname,u.ip
+from t1 u left join
+t2 c on u.id=c.user_id
+where 
+(u.realname='XXX'
+or u.phone='XXX'
+or u.ip='XXX'
+or c.card_num='XXX')
+and (u.id not in (select user_id from t3 where ralate_id='1000'));
+--执行结果发现去掉条件c.card_num后速度飞快
+select u.id,u.username,u.realname,u.ip
+from t1 u
+where 
+(u.realname='XXX'
+or u.phone='XXX'
+or u.ip='XXX') 
+and (u.id not in (select user_id from t3 where ralate_id='1000'))
+union 
+select u.* from (
+select u.id,u.username,u.realname,u.ip
+from t1 u
+where 
+(u.realname='XXX'
+or u.phone='XXX'
+or u.ip='XXX') 
+and (u.id not in (select user_id from t3 where ralate_id='1000'))) u 
+left join
+t2 c on c.user_id=u.id 
+where c.card_num='XXX';
+
+8.0中可以还写成：
+with v as (
+select u.id,u.username,u.realname,u.ip
+from t1 u
+where 
+(u.realname='XXX'
+or u.phone='XXX'
+or u.ip='XXX') 
+and (u.id not in (select user_id from t3 where ralate_id='1000')))
+select v.* from v 
+union 
+select v.* from v left join 
+t2 c on c.user_id=u.id 
+where c.card_num='XXX';
+
+--CTE可以使用DML语句
+with qn as
+（select a+2 as a,b from t12）
+delete t12,qn where t12.a=qn.a;
+注意：delete删除表避免使用in exists等子句，使用join速度会快点
+
+mysql> with e2 as (select * from employees),
+    -> e3 as (select * from employees)
+    -> select count(1) from employees e1
+    -> left join e2 on e1.emp_no=e2.emp_no
+    -> left join e3 on e2.emp_no=e3.emp_no;
+CET的本质是子查询，所以子查询的一些特性使用
+
+--with最好的使用方式是一次存储，多次调用。
+mysql> set session optimizer_switch='derived_merge=off';
+Query OK, 0 rows affected (0.04 sec)
+mysql> flush status;
+Query OK, 0 rows affected (0.10 sec)
+
+mysql> desc select * from (select * from t_group) w1 join (select * from t_group) w2 on w1.emp_no=w2.emp_no;
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+| id | select_type | table      | partitions | type | possible_keys | key         | key_len | ref       | rows | filtered | Extra |
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+|  1 | PRIMARY     | <derived2> | NULL       | ALL  | NULL          | NULL        | NULL    | NULL      |   11 |   100.00 | NULL  |
+|  1 | PRIMARY     | <derived3> | NULL       | ref  | <auto_key0>   | <auto_key0> | 4       | w1.emp_no |    2 |   100.00 | NULL  |
+|  3 | DERIVED     | t_group    | NULL       | ALL  | NULL          | NULL        | NULL    | NULL      |   11 |   100.00 | NULL  |
+|  2 | DERIVED     | t_group    | NULL       | ALL  | NULL          | NULL        | NULL    | NULL      |   11 |   100.00 | NULL  |
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+4 rows in set, 1 warning (0.00 sec)
+
+mysql> select * from (select * from t_group) w1 join (select * from t_group) w2 on w1.emp_no=w2.emp_no;
++--------+---------+------------+------------+--------+---------+------------+------------+
+| emp_no | dept_no | from_date  | to_date    | emp_no | dept_no | from_date  | to_date    |
++--------+---------+------------+------------+--------+---------+------------+------------+
+|  22744 | d006    | 1986-12-01 | 9999-01-01 |  22744 | d006    | 1986-12-01 | 9999-01-01 |
+|  24007 | d005    | 1986-12-01 | 9999-01-01 |  24007 | d005    | 1986-12-01 | 9999-01-01 |
+|   3097 | d005    | 1986-12-01 | 2017-03-29 |   3097 | d005    | 1986-12-01 | 2017-03-29 |
+|  31112 | d002    | 1986-12-01 | 1993-12-10 |  31112 | d002    | 1986-12-01 | 1993-12-10 |
+|  40983 | d005    | 1986-12-01 | 9999-01-01 |  40983 | d005    | 1986-12-01 | 9999-01-01 |
+|  46554 | d008    | 1986-12-01 | 1992-05-27 |  46554 | d008    | 1986-12-01 | 1992-05-27 |
+|  48317 | d008    | 1986-12-01 | 1989-01-11 |  48317 | d008    | 1986-12-01 | 1989-01-11 |
+|  49667 | d007    | 1986-12-01 | 9999-01-01 |  49667 | d007    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1986-12-01 | 9999-01-01 |  50449 | d005    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1986-12-01 | 9999-01-01 |  50449 | d005    | 1987-12-01 | 9999-01-01 |
+|  10004 | d004    | 1986-12-01 | 9999-01-01 |  10004 | d004    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1987-12-01 | 9999-01-01 |  50449 | d005    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1987-12-01 | 9999-01-01 |  50449 | d005    | 1987-12-01 | 9999-01-01 |
++--------+---------+------------+------------+--------+---------+------------+------------+
+13 rows in set (0.03 sec)
+
+mysql> show status like '%handle%';
++---------------------------------------+-------+
+| Variable_name                         | Value |
++---------------------------------------+-------+
+| Handler_commit                        | 2     |
+| Handler_delete                        | 0     |
+| Handler_discover                      | 0     |
+| Handler_external_lock                 | 8     |
+| Handler_mrr_init                      | 0     |
+| Handler_prepare                       | 0     |
+| Handler_read_first                    | 2     |
+| Handler_read_key                      | 13    |
+| Handler_read_last                     | 0     |
+| Handler_read_next                     | 13    |
+| Handler_read_prev                     | 0     |
+| Handler_read_rnd                      | 0     |
+| Handler_read_rnd_next                 | 36    |
+| Handler_rollback                      | 0     |
+| Handler_savepoint                     | 0     |
+| Handler_savepoint_rollback            | 0     |
+| Handler_update                        | 0     |
+| Handler_write                         | 22    |  --可见临时表写了两次
+| Performance_schema_file_handles_lost  | 0     |
+| Performance_schema_table_handles_lost | 0     |
++---------------------------------------+-------+
+20 rows in set (0.03 sec)
+
+
+
+mysql> desc with w1 as (select * from t_group) select * from w1 join w1 w2  on w1.emp_no=w2.emp_no;
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+| id | select_type | table      | partitions | type | possible_keys | key         | key_len | ref       | rows | filtered | Extra |
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+|  1 | PRIMARY     | <derived2> | NULL       | ALL  | NULL          | NULL        | NULL    | NULL      |   11 |   100.00 | NULL  |
+|  1 | PRIMARY     | <derived2> | NULL       | ref  | <auto_key0>   | <auto_key0> | 4       | w1.emp_no |    2 |   100.00 | NULL  |
+|  2 | DERIVED     | t_group    | NULL       | ALL  | NULL          | NULL        | NULL    | NULL      |   11 |   100.00 | NULL  |
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+3 rows in set, 1 warning (0.00 sec)
+
+mysql> flush status;
+Query OK, 0 rows affected (0.00 sec)
+
+mysql> with w1 as (select * from t_group) select * from w1 join w1 w2  on w1.emp_no=w2.emp_no;
++--------+---------+------------+------------+--------+---------+------------+------------+
+| emp_no | dept_no | from_date  | to_date    | emp_no | dept_no | from_date  | to_date    |
++--------+---------+------------+------------+--------+---------+------------+------------+
+|  22744 | d006    | 1986-12-01 | 9999-01-01 |  22744 | d006    | 1986-12-01 | 9999-01-01 |
+|  24007 | d005    | 1986-12-01 | 9999-01-01 |  24007 | d005    | 1986-12-01 | 9999-01-01 |
+|   3097 | d005    | 1986-12-01 | 2017-03-29 |   3097 | d005    | 1986-12-01 | 2017-03-29 |
+|  31112 | d002    | 1986-12-01 | 1993-12-10 |  31112 | d002    | 1986-12-01 | 1993-12-10 |
+|  40983 | d005    | 1986-12-01 | 9999-01-01 |  40983 | d005    | 1986-12-01 | 9999-01-01 |
+|  46554 | d008    | 1986-12-01 | 1992-05-27 |  46554 | d008    | 1986-12-01 | 1992-05-27 |
+|  48317 | d008    | 1986-12-01 | 1989-01-11 |  48317 | d008    | 1986-12-01 | 1989-01-11 |
+|  49667 | d007    | 1986-12-01 | 9999-01-01 |  49667 | d007    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1986-12-01 | 9999-01-01 |  50449 | d005    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1986-12-01 | 9999-01-01 |  50449 | d005    | 1987-12-01 | 9999-01-01 |
+|  10004 | d004    | 1986-12-01 | 9999-01-01 |  10004 | d004    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1987-12-01 | 9999-01-01 |  50449 | d005    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1987-12-01 | 9999-01-01 |  50449 | d005    | 1987-12-01 | 9999-01-01 |
++--------+---------+------------+------------+--------+---------+------------+------------+
+13 rows in set (0.00 sec)
+
+mysql> show status like '%handle%';
++---------------------------------------+-------+
+| Variable_name                         | Value |
++---------------------------------------+-------+
+| Handler_commit                        | 1     |
+| Handler_delete                        | 0     |
+| Handler_discover                      | 0     |
+| Handler_external_lock                 | 4     |
+| Handler_mrr_init                      | 0     |
+| Handler_prepare                       | 0     |
+| Handler_read_first                    | 1     |
+| Handler_read_key                      | 12    |
+| Handler_read_last                     | 0     |
+| Handler_read_next                     | 13    |
+| Handler_read_prev                     | 0     |
+| Handler_read_rnd                      | 0     |
+| Handler_read_rnd_next                 | 24    |
+| Handler_rollback                      | 0     |
+| Handler_savepoint                     | 0     |
+| Handler_savepoint_rollback            | 0     |
+| Handler_update                        | 0     |
+| Handler_write                         | 11    |--只写了十一次
+| Performance_schema_file_handles_lost  | 0     |
+| Performance_schema_table_handles_lost | 0     |
++---------------------------------------+-------+
+20 rows in set (0.00 sec)
+
+--CTE优化的两种思路：
+1 关闭视图merge
+mysql> desc with w1 as (select /*+ set_var(optimizer_switch='derived_merge=off') */ * from t_group) select * from w1 join w1 w2  on w1.emp_no=w2.emp_no;
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+| id | select_type | table      | partitions | type | possible_keys | key         | key_len | ref       | rows | filtered | Extra |
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+|  1 | PRIMARY     | <derived2> | NULL       | ALL  | NULL          | NULL        | NULL    | NULL      |   11 |   100.00 | NULL  |
+|  1 | PRIMARY     | <derived2> | NULL       | ref  | <auto_key0>   | <auto_key0> | 4       | w1.emp_no |    2 |   100.00 | NULL  |
+|  2 | DERIVED     | t_group    | NULL       | ALL  | NULL          | NULL        | NULL    | NULL      |   11 |   100.00 | NULL  |
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+2 使用hint合并视图
+mysql> desc with w1 as (select /*+ set_var(optimizer_switch='derived_merge=off') */ * from t_group) select /*+ merge(w1,w2)*/ * from w1 join w1 w2  on w1.emp_no=w2.emp_no;
++----+-------------+---------+------------+------+---------------+------+---------+------+------+----------+----------------------------------------------------+
+| id | select_type | table   | partitions | type | possible_keys | key  | key_len | ref  | rows | filtered | Extra                                              |
++----+-------------+---------+------------+------+---------------+------+---------+------+------+----------+----------------------------------------------------+
+|  1 | SIMPLE      | t_group | NULL       | ALL  | NULL          | NULL | NULL    | NULL |   11 |   100.00 | NULL                                               |
+|  1 | SIMPLE      | t_group | NULL       | ALL  | NULL          | NULL | NULL    | NULL |   11 |    10.00 | Using where; Using join buffer (Block Nested Loop) |
++----+-------------+---------+------------+------+---------------+------+---------+------+------+----------+----------------------------------------------------+
+2 rows in set, 2 warnings (0.00 sec)
+mysql> desc with w1 as (select /*+ set_var(optimizer_switch='derived_merge=off') */ * from t_group) select /*+ merge(w1)*/ * from w1 join w1 w2  on w1.emp_no=w2.emp_no;
++----+-------------+------------+------------+------+---------------+-------------+---------+--------------------------+------+----------+-------+
+| id | select_type | table      | partitions | type | possible_keys | key         | key_len | ref                      | rows | filtered | Extra |
++----+-------------+------------+------------+------+---------------+-------------+---------+--------------------------+------+----------+-------+
+|  1 | PRIMARY     | t_group    | NULL       | ALL  | NULL          | NULL        | NULL    | NULL                     |   11 |   100.00 | NULL  |
+|  1 | PRIMARY     | <derived3> | NULL       | ref  | <auto_key0>   | <auto_key0> | 4       | employees.t_group.emp_no |    2 |   100.00 | NULL  |
+|  3 | DERIVED     | t_group    | NULL       | ALL  | NULL          | NULL        | NULL    | NULL                     |   11 |   100.00 | NULL  |
++----+-------------+------------+------------+------+---------------+-------------+---------+--------------------------+------+----------+-------+
+3 rows in set, 2 warnings (0.00 sec)
+
+3 不合并视图
+mysql> desc with w1 as (select * from t_group) select /*+ no_merge(w1,w2)*/ * from w1 join w1 w2  on w1.emp_no=w2.emp_no;
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+| id | select_type | table      | partitions | type | possible_keys | key         | key_len | ref       | rows | filtered | Extra |
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+|  1 | PRIMARY     | <derived2> | NULL       | ALL  | NULL          | NULL        | NULL    | NULL      |   11 |   100.00 | NULL  |
+|  1 | PRIMARY     | <derived2> | NULL       | ref  | <auto_key0>   | <auto_key0> | 4       | w1.emp_no |    2 |   100.00 | NULL  |
+|  2 | DERIVED     | t_group    | NULL       | ALL  | NULL          | NULL        | NULL    | NULL      |   11 |   100.00 | NULL  |
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+3 rows in set, 1 warning (0.00 sec)
+
+mysql> desc with w1 as (select * from t_group) select /*+ no_merge(w1)*/ * from w1 join w1 w2  on w1.emp_no=w2.emp_no;
++----+-------------+------------+------------+------+---------------+-------------+---------+--------------------------+------+----------+-------+
+| id | select_type | table      | partitions | type | possible_keys | key         | key_len | ref                      | rows | filtered | Extra |
++----+-------------+------------+------------+------+---------------+-------------+---------+--------------------------+------+----------+-------+
+|  1 | PRIMARY     | t_group    | NULL       | ALL  | NULL          | NULL        | NULL    | NULL                     |   11 |   100.00 | NULL  |
+|  1 | PRIMARY     | <derived2> | NULL       | ref  | <auto_key0>   | <auto_key0> | 4       | employees.t_group.emp_no |    2 |   100.00 | NULL  |
+|  2 | DERIVED     | t_group    | NULL       | ALL  | NULL          | NULL        | NULL    | NULL                     |   11 |   100.00 | NULL  |
++----+-------------+------------+------------+------+---------------+-------------+---------+--------------------------+------+----------+-------+
+3 rows in set, 1 warning (0.01 sec)
+
+```
+
+
+
+## window function
+
+### row_number() over
+
+注意：相同结果，没有并列值，按照1,2,3这样排序
+
+```sql
+
+mysql> select e.* from (
+    -> select d.*,row_number() over(partition by d.dept_no order by d.emp_no desc) rn from t_group d) e where e.rn=1;
++--------+---------+------------+------------+----+
+| emp_no | dept_no | from_date  | to_date    | rn |
++--------+---------+------------+------------+----+
+|  31112 | d002    | 1986-12-01 | 1993-12-10 |  1 |
+|  10004 | d004    | 1986-12-01 | 9999-01-01 |  1 |
+|  50449 | d005    | 1986-12-01 | 9999-01-01 |  1 |
+|  22744 | d006    | 1986-12-01 | 9999-01-01 |  1 |
+|  49667 | d007    | 1986-12-01 | 9999-01-01 |  1 |
+|  48317 | d008    | 1986-12-01 | 1989-01-11 |  1 |
++--------+---------+------------+------------+----+
+6 rows in set (0.10 sec)
+案例1：
+--窗口函数的优化，使用延迟join优化，本质还是对* 的order by 排序的优化！
+mysql> select e.* from (select d.*,row_number() over(partition by d.dept_no order by d.emp_no desc) rn from dept_emp d) e where e.rn=1;
++--------+---------+------------+------------+----+
+| emp_no | dept_no | from_date  | to_date    | rn |
++--------+---------+------------+------------+----+
+| 499992 | d001    | 1995-05-31 | 9999-01-01 |  1 |
+| 499998 | d002    | 1993-12-27 | 9999-01-01 |  1 |
+| 499992 | d003    | 1987-05-10 | 1995-05-31 |  1 |
+| 499999 | d004    | 1997-11-30 | 9999-01-01 |  1 |
+| 499997 | d005    | 1987-08-30 | 9999-01-01 |  1 |
+| 499964 | d006    | 1994-09-25 | 9999-01-01 |  1 |
+| 499988 | d007    | 1988-07-25 | 2001-10-09 |  1 |
+| 499985 | d008    | 1997-02-11 | 9999-01-01 |  1 |
+| 499991 | d009    | 1997-02-11 | 9999-01-01 |  1 |
++--------+---------+------------+------------+----+
+9 rows in set (0.66 sec)
+--备注：查看执行计划，发现子查询中的窗口函数对*（所有列）进行order by，这样会导致SQL执行效率低下；
+       优化思路是对关键列（必须的列，主键之类作为连接条件的列进行排序）
+mysql> desc select e.* from (select d.*,row_number() over(partition by d.dept_no order by d.emp_no desc) rn from dept_emp d) e where e.rn=1;
++----+-------------+------------+------------+------+---------------+-------------+---------+-------+--------+----------+----------------+
+| id | select_type | table      | partitions | type | possible_keys | key         | key_len | ref   | rows   | filtered | Extra          |
++----+-------------+------------+------------+------+---------------+-------------+---------+-------+--------+----------+----------------+
+|  1 | PRIMARY     | <derived2> | NULL       | ref  | <auto_key0>   | <auto_key0> | 8       | const |     10 |   100.00 | NULL           |
+|  2 | DERIVED     | d          | NULL       | ALL  | NULL          | NULL        | NULL    | NULL  | 331143 |   100.00 | Using filesort |
++----+-------------+------------+------------+------+---------------+-------------+---------+-------+--------+----------+----------------+
+2 rows in set, 2 warnings (0.00 sec)
+
+mysql> select s.* from (select d.dept_no,d.emp_no,row_number() over(partition by d.dept_no order by d.emp_no desc) rn from dept_emp d) e 
+       straight_join dept_emp s on e.dept_no=s.dept_no and e.emp_no=s.emp_no where e.rn=1;
++--------+---------+------------+------------+
+| emp_no | dept_no | from_date  | to_date    |
++--------+---------+------------+------------+
+| 499992 | d001    | 1995-05-31 | 9999-01-01 |
+| 499998 | d002    | 1993-12-27 | 9999-01-01 |
+| 499992 | d003    | 1987-05-10 | 1995-05-31 |
+| 499999 | d004    | 1997-11-30 | 9999-01-01 |
+| 499997 | d005    | 1987-08-30 | 9999-01-01 |
+| 499964 | d006    | 1994-09-25 | 9999-01-01 |
+| 499988 | d007    | 1988-07-25 | 2001-10-09 |
+| 499985 | d008    | 1997-02-11 | 9999-01-01 |
+| 499991 | d009    | 1997-02-11 | 9999-01-01 |
++--------+---------+------------+------------+
+9 rows in set (0.30 sec)
+
+mysql> desc select s.* from (select d.dept_no,d.emp_no,row_number() over(partition by d.dept_no order by d.emp_no desc) rn from dept_emp d) e straight_join dept_emp s on e.dept_no=s.dept_no and e.emp_no=s.emp_no where e.rn=1;
++----+-------------+------------+------------+--------+------------------------+---------+---------+--------------------+--------+----------+-----------------------------+
+| id | select_type | table      | partitions | type   | possible_keys          | key     | key_len | ref                | rows   | filtered | Extra                       |
++----+-------------+------------+------------+--------+------------------------+---------+---------+--------------------+--------+----------+-----------------------------+
+|  1 | PRIMARY     | <derived2> | NULL       | ALL    | NULL                   | NULL    | NULL    | NULL               | 331143 |    10.00 | Using where                 |
+|  1 | PRIMARY     | s          | NULL       | eq_ref | PRIMARY,emp_no,dept_no | PRIMARY | 16      | e.emp_no,e.dept_no |      1 |   100.00 | NULL                        |
+|  2 | DERIVED     | d          | NULL       | index  | NULL                   | emp_no  | 4       | NULL               | 331143 |   100.00 | Using index; Using filesort |
++----+-------------+------------+------------+--------+------------------------+---------+---------+--------------------+--------+----------+-----------------------------+
+3 rows in set, 2 warnings (0.00 sec)
+
+
+案例2:
+--减少窗口函数作用的rows的优化(函数作用的rows过大)：
+mysql> desc select g.* from t_group g join (select d.* ,row_number() over(partition by d.emp_no order by d.from_date desc ) rn from dept_emp d) d where g.emp_no=d.emp_no and rn=1;
++----+-------------+------------+------------+------+---------------+-------------+---------+--------------------------+--------+----------+----------------+
+| id | select_type | table      | partitions | type | possible_keys | key         | key_len | ref                      | rows   | filtered | Extra          |
++----+-------------+------------+------------+------+---------------+-------------+---------+--------------------------+--------+----------+----------------+
+|  1 | PRIMARY     | g          | NULL       | ALL  | NULL          | NULL        | NULL    | NULL                     |     11 |   100.00 | NULL           |
+|  1 | PRIMARY     | <derived2> | NULL       | ref  | <auto_key0>   | <auto_key0> | 12      | employees.g.emp_no,const |   3311 |   100.00 | NULL           |
+|  2 | DERIVED     | d          | NULL       | ALL  | NULL          | NULL        | NULL    | NULL                     | 331143 |   100.00 | Using filesort |
++----+-------------+------------+------------+------+---------------+-------------+---------+--------------------------+--------+----------+----------------+
+3 rows in set, 2 warnings (0.00 sec)  可见子查询中的rows很大
+执行时间：
+mysql> select g.* from t_group g join (select d.* ,row_number() over(partition by d.emp_no order by d.from_date desc ) rn from dept_emp d) d where g.emp_no=d.emp_no and rn=1;
++--------+---------+------------+------------+
+| emp_no | dept_no | from_date  | to_date    |
++--------+---------+------------+------------+
+|  22744 | d006    | 1986-12-01 | 9999-01-01 |
+|  24007 | d005    | 1986-12-01 | 9999-01-01 |
+|  31112 | d002    | 1986-12-01 | 1993-12-10 |
+|  40983 | d005    | 1986-12-01 | 9999-01-01 |
+|  46554 | d008    | 1986-12-01 | 1992-05-27 |
+|  48317 | d008    | 1986-12-01 | 1989-01-11 |
+|  49667 | d007    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1986-12-01 | 9999-01-01 |
+|  10004 | d004    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1987-12-01 | 9999-01-01 |
++--------+---------+------------+------------+
+10 rows in set (0.68 sec)
+优化方法：
+--减少row_number()排序的rows，减少无用的工作量
+mysql> desc select g.* from t_group g join 
+       (select d.* ,row_number() over(partition by d.emp_no order by d.from_date desc ) rn 
+        from dept_emp d where d.emp_no in (select g.emp_no from t_group g)) d where g.emp_no=d.emp_no and rn=1;
++----+--------------+-------------+------------+------+----------------+---------+---------+--------------------+------+----------+----------------------------------------------------+
+| id | select_type  | table       | partitions | type | possible_keys  | key     | key_len | ref                | rows | filtered | Extra                                              |
++----+--------------+-------------+------------+------+----------------+---------+---------+--------------------+------+----------+----------------------------------------------------+
+|  1 | PRIMARY      | <derived2>  | NULL       | ALL  | NULL           | NULL    | NULL    | NULL               |    2 |    50.00 | Using where                                        |
+|  1 | PRIMARY      | g           | NULL       | ALL  | NULL           | NULL    | NULL    | NULL               |   11 |    10.00 | Using where; Using join buffer (Block Nested Loop) |
+|  2 | DERIVED      | <subquery3> | NULL       | ALL  | NULL           | NULL    | NULL    | NULL               | NULL |   100.00 | Using temporary; Using filesort                    |
+|  2 | DERIVED      | d           | NULL       | ref  | PRIMARY,emp_no | PRIMARY | 4       | <subquery3>.emp_no |    1 |   100.00 | NULL                                               |
+|  3 | MATERIALIZED | g           | NULL       | ALL  | NULL           | NULL    | NULL    | NULL               |   11 |   100.00 | NULL                                               |
++----+--------------+-------------+------------+------+----------------+---------+---------+--------------------+------+----------+----------------------------------------------------+
+5 rows in set, 2 warnings (0.00 sec)
+
+mysql> select g.* from t_group g join (select d.* ,row_number() over(partition by d.emp_no order by d.from_date desc ) rn from dept_emp d where d.emp_no in (select g.emp_no from t_group g)) d where g.emp_no=d.emp_no and rn=1;
++--------+---------+------------+------------+
+| emp_no | dept_no | from_date  | to_date    |
++--------+---------+------------+------------+
+|  22744 | d006    | 1986-12-01 | 9999-01-01 |
+|  24007 | d005    | 1986-12-01 | 9999-01-01 |
+|  31112 | d002    | 1986-12-01 | 1993-12-10 |
+|  40983 | d005    | 1986-12-01 | 9999-01-01 |
+|  46554 | d008    | 1986-12-01 | 1992-05-27 |
+|  48317 | d008    | 1986-12-01 | 1989-01-11 |
+|  49667 | d007    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1986-12-01 | 9999-01-01 |
+|  10004 | d004    | 1986-12-01 | 9999-01-01 |
+|  50449 | d005    | 1987-12-01 | 9999-01-01 |
++--------+---------+------------+------------+
+10 rows in set (0.00 sec)
+```
+
+### rank() over 
+
+和 row_number() over 类似，但是包含并列值，有跳跃
+
+```sql
+mysql> select e.* from (select d.* ,rank() over(partition by d.dept_no order by d.to_date desc) rn from t_group d) e;
++--------+---------+------------+------------+----+
+| emp_no | dept_no | from_date  | to_date    | rn |
++--------+---------+------------+------------+----+
+|  31112 | d002    | 1986-12-01 | 1993-12-10 |  1 |
+|  10004 | d004    | 1986-12-01 | 9999-01-01 |  1 |
+|  24007 | d005    | 1986-12-01 | 9999-01-01 |  1 |
+|  40983 | d005    | 1986-12-01 | 9999-01-01 |  1 |
+|  50449 | d005    | 1986-12-01 | 9999-01-01 |  1 |
+|  50449 | d005    | 1987-12-01 | 9999-01-01 |  1 |
+|   3097 | d005    | 1986-12-01 | 2017-03-29 |  5 |
+|  22744 | d006    | 1986-12-01 | 9999-01-01 |  1 |
+|  49667 | d007    | 1986-12-01 | 9999-01-01 |  1 |
+|  46554 | d008    | 1986-12-01 | 1992-05-27 |  1 |
+|  48317 | d008    | 1986-12-01 | 1989-01-11 |  2 |
++--------+---------+------------+------------+----+
+11 rows in set (0.04 sec)
+```
+
+### dense_rank() over 
+
+和row_number() over 类似，包含并列值 不跳跃
+
+```sql
+
+mysql> select e.* from (select d.* ,dense_rank() over(partition by d.dept_no order by d.to_date desc) rn from t_group d) e;
++--------+---------+------------+------------+----+
+| emp_no | dept_no | from_date  | to_date    | rn |
++--------+---------+------------+------------+----+
+|  31112 | d002    | 1986-12-01 | 1993-12-10 |  1 |
+|  10004 | d004    | 1986-12-01 | 9999-01-01 |  1 |
+|  24007 | d005    | 1986-12-01 | 9999-01-01 |  1 |
+|  40983 | d005    | 1986-12-01 | 9999-01-01 |  1 |
+|  50449 | d005    | 1986-12-01 | 9999-01-01 |  1 |
+|  50449 | d005    | 1987-12-01 | 9999-01-01 |  1 |
+|   3097 | d005    | 1986-12-01 | 2017-03-29 |  2 |
+|  22744 | d006    | 1986-12-01 | 9999-01-01 |  1 |
+|  49667 | d007    | 1986-12-01 | 9999-01-01 |  1 |
+|  46554 | d008    | 1986-12-01 | 1992-05-27 |  1 |
+|  48317 | d008    | 1986-12-01 | 1989-01-11 |  2 |
++--------+---------+------------+------------+----+
+11 rows in set (0.00 sec)
+```
+
+### lead(exp ,offset, 默认值) over() 
+
+求下offset行数据的值
+
+```SQL
+员工号是10001的工资增长情况：
+mysql> select s.*,lead(s.salary,1,0) over (partition by s.emp_no order by to_date desc) ex from salaries s where s.emp_no=10001;
++--------+--------+------------+------------+-------+
+| emp_no | salary | from_date  | to_date    | ex    |
++--------+--------+------------+------------+-------+
+|  10001 |  88958 | 2002-06-22 | 9999-01-01 | 85097 |
+|  10001 |  85097 | 2001-06-22 | 2002-06-22 | 85112 |
+|  10001 |  85112 | 2000-06-22 | 2001-06-22 | 84917 |
+|  10001 |  84917 | 1999-06-23 | 2000-06-22 | 81097 |
+|  10001 |  81097 | 1998-06-23 | 1999-06-23 | 81025 |
+|  10001 |  81025 | 1997-06-23 | 1998-06-23 | 80013 |
+|  10001 |  80013 | 1996-06-23 | 1997-06-23 | 76884 |
+|  10001 |  76884 | 1995-06-24 | 1996-06-23 | 75994 |
+|  10001 |  75994 | 1994-06-24 | 1995-06-24 | 75286 |
+|  10001 |  75286 | 1993-06-24 | 1994-06-24 | 74333 |
+|  10001 |  74333 | 1992-06-24 | 1993-06-24 | 71046 |
+|  10001 |  71046 | 1991-06-25 | 1992-06-24 | 66961 |
+|  10001 |  66961 | 1990-06-25 | 1991-06-25 | 66596 |
+|  10001 |  66596 | 1989-06-25 | 1990-06-25 | 66074 |
+|  10001 |  66074 | 1988-06-25 | 1989-06-25 | 62102 |
+|  10001 |  62102 | 1987-06-26 | 1988-06-25 | 60117 |
+|  10001 |  60117 | 1986-06-26 | 1987-06-26 |     0 |
++--------+--------+------------+------------+-------+
+17 rows in set (0.07 sec)
+```
+
+
+
+
+
+### lag over(exp,offset,默认值) 
+
+求上offset行数据的值
+
+```SQL
+
+mysql> select s.*,lag(s.salary,2,0) over (partition by s.emp_no order by to_date desc) ex from salaries s where s.emp_no=10001;
++--------+--------+------------+------------+-------+
+| emp_no | salary | from_date  | to_date    | ex    |
++--------+--------+------------+------------+-------+
+|  10001 |  88958 | 2002-06-22 | 9999-01-01 |     0 |
+|  10001 |  85097 | 2001-06-22 | 2002-06-22 |     0 |
+|  10001 |  85112 | 2000-06-22 | 2001-06-22 | 88958 |
+|  10001 |  84917 | 1999-06-23 | 2000-06-22 | 85097 |
+|  10001 |  81097 | 1998-06-23 | 1999-06-23 | 85112 |
+|  10001 |  81025 | 1997-06-23 | 1998-06-23 | 84917 |
+|  10001 |  80013 | 1996-06-23 | 1997-06-23 | 81097 |
+|  10001 |  76884 | 1995-06-24 | 1996-06-23 | 81025 |
+|  10001 |  75994 | 1994-06-24 | 1995-06-24 | 80013 |
+|  10001 |  75286 | 1993-06-24 | 1994-06-24 | 76884 |
+|  10001 |  74333 | 1992-06-24 | 1993-06-24 | 75994 |
+|  10001 |  71046 | 1991-06-25 | 1992-06-24 | 75286 |
+|  10001 |  66961 | 1990-06-25 | 1991-06-25 | 74333 |
+|  10001 |  66596 | 1989-06-25 | 1990-06-25 | 71046 |
+|  10001 |  66074 | 1988-06-25 | 1989-06-25 | 66961 |
+|  10001 |  62102 | 1987-06-26 | 1988-06-25 | 66596 |
+|  10001 |  60117 | 1986-06-26 | 1987-06-26 | 66074 |
++--------+--------+------------+------------+-------+
+17 rows in set (0.00 sec)
+```
+
+
+
+### sum(exp) over()
+
+```sql 
+mysql> select s.* ,sum(s.salary) over(partition by s.emp_no order by s.to_date desc rows between unbounded preceding and unbounded following) total,
+    -> sum(s.salary) over(partition by s.emp_no order by s.to_date desc rows between unbounded preceding and current row)  cur
+    -> from salaries s where s.emp_no=10001;
++--------+--------+------------+------------+---------+---------+
+| emp_no | salary | from_date  | to_date    | total   | cur     |
++--------+--------+------------+------------+---------+---------+
+|  10001 |  88958 | 2002-06-22 | 9999-01-01 | 1281612 |   88958 |
+|  10001 |  85097 | 2001-06-22 | 2002-06-22 | 1281612 |  174055 |
+|  10001 |  85112 | 2000-06-22 | 2001-06-22 | 1281612 |  259167 |
+|  10001 |  84917 | 1999-06-23 | 2000-06-22 | 1281612 |  344084 |
+|  10001 |  81097 | 1998-06-23 | 1999-06-23 | 1281612 |  425181 |
+|  10001 |  81025 | 1997-06-23 | 1998-06-23 | 1281612 |  506206 |
+|  10001 |  80013 | 1996-06-23 | 1997-06-23 | 1281612 |  586219 |
+|  10001 |  76884 | 1995-06-24 | 1996-06-23 | 1281612 |  663103 |
+|  10001 |  75994 | 1994-06-24 | 1995-06-24 | 1281612 |  739097 |
+|  10001 |  75286 | 1993-06-24 | 1994-06-24 | 1281612 |  814383 |
+|  10001 |  74333 | 1992-06-24 | 1993-06-24 | 1281612 |  888716 |
+|  10001 |  71046 | 1991-06-25 | 1992-06-24 | 1281612 |  959762 |
+|  10001 |  66961 | 1990-06-25 | 1991-06-25 | 1281612 | 1026723 |
+|  10001 |  66596 | 1989-06-25 | 1990-06-25 | 1281612 | 1093319 |
+|  10001 |  66074 | 1988-06-25 | 1989-06-25 | 1281612 | 1159393 |
+|  10001 |  62102 | 1987-06-26 | 1988-06-25 | 1281612 | 1221495 |
+|  10001 |  60117 | 1986-06-26 | 1987-06-26 | 1281612 | 1281612 |
++--------+--------+------------+------------+---------+---------+
+17 rows in set (0.00 sec)
+
+mysql> select s.* ,min(s.salary) over(partition by s.emp_no order by s.to_date desc rows between unbounded preceding and unbounded following) total,
+    -> min(s.salary) over(partition by s.emp_no order by s.to_date desc rows between unbounded preceding and current row)  cur
+    -> from salaries s where s.emp_no=10001;
++--------+--------+------------+------------+-------+-------+
+| emp_no | salary | from_date  | to_date    | total | cur   |
++--------+--------+------------+------------+-------+-------+
+|  10001 |  88958 | 2002-06-22 | 9999-01-01 | 60117 | 88958 |
+|  10001 |  85097 | 2001-06-22 | 2002-06-22 | 60117 | 85097 |
+|  10001 |  85112 | 2000-06-22 | 2001-06-22 | 60117 | 85097 |
+|  10001 |  84917 | 1999-06-23 | 2000-06-22 | 60117 | 84917 |
+|  10001 |  81097 | 1998-06-23 | 1999-06-23 | 60117 | 81097 |
+|  10001 |  81025 | 1997-06-23 | 1998-06-23 | 60117 | 81025 |
+|  10001 |  80013 | 1996-06-23 | 1997-06-23 | 60117 | 80013 |
+|  10001 |  76884 | 1995-06-24 | 1996-06-23 | 60117 | 76884 |
+|  10001 |  75994 | 1994-06-24 | 1995-06-24 | 60117 | 75994 |
+|  10001 |  75286 | 1993-06-24 | 1994-06-24 | 60117 | 75286 |
+|  10001 |  74333 | 1992-06-24 | 1993-06-24 | 60117 | 74333 |
+|  10001 |  71046 | 1991-06-25 | 1992-06-24 | 60117 | 71046 |
+|  10001 |  66961 | 1990-06-25 | 1991-06-25 | 60117 | 66961 |
+|  10001 |  66596 | 1989-06-25 | 1990-06-25 | 60117 | 66596 |
+|  10001 |  66074 | 1988-06-25 | 1989-06-25 | 60117 | 66074 |
+|  10001 |  62102 | 1987-06-26 | 1988-06-25 | 60117 | 62102 |
+|  10001 |  60117 | 1986-06-26 | 1987-06-26 | 60117 | 60117 |
++--------+--------+------------+------------+-------+-------+
+17 rows in set (0.00 sec)
+```
+
+
+
+## regular expressions 
+
+用在where条件中比较多
+
+```sql
+mysql> desc select * from titles where emp_no between 10001 and 11000 and regexp_like (title,'[a-z]{5}');
++----+-------------+--------+------------+-------+----------------+---------+---------+------+------+----------+-------------+
+| id | select_type | table  | partitions | type  | possible_keys  | key     | key_len | ref  | rows | filtered | Extra       |
++----+-------------+--------+------------+-------+----------------+---------+---------+------+------+----------+-------------+
+|  1 | SIMPLE      | titles | NULL       | range | PRIMARY,emp_no | PRIMARY | 4       | NULL | 1470 |   100.00 | Using where |
++----+-------------+--------+------------+-------+----------------+---------+---------+------+------+----------+-------------+
+1 row in set, 1 warning (0.00 sec)
+正则表达式不要作为第一过滤条件，先把结果集范围缩小，再正则。
+
+mysql> desc select * from titles where emp_no+0 between 10001 and 11000 and regexp_like (title,'[a-z]{5}');
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+-------------+
+| id | select_type | table  | partitions | type | possible_keys | key  | key_len | ref  | rows   | filtered | Extra       |
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+-------------+
+|  1 | SIMPLE      | titles | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 442426 |   100.00 | Using where |
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+-------------+
+1 row in set, 1 warning (0.00 sec)
+
+替换：regexp_replace
+mysql> with w1 as (select 'a1,b2,c3,edf100' a from dual)
+    -> select regexp_replace(a,'[a-z]{1,9}','d') a2, a from w1;
++---------------+-----------------+
+| a2            | a               |
++---------------+-----------------+
+| d1,d2,d3,d100 | a1,b2,c3,edf100 |
++---------------+-----------------+
+1 row in set (0.00 sec)
+
+截取：regexp_substr
+mysql> with w1 as (select 'a1,b2,c3,edf100' a from dual)
+    -> select regexp_substr(a,'[a-z 0-9]{1,9}',1,1) a1,
+    -> regexp_substr(a,'[a-z 0-9]{1,9}',1,2) a2,
+    -> regexp_substr(a,'[a-z 0-9]{1,9}',1,3) a3,
+    -> regexp_substr(a,'[a-z 0-9]{1,9}',1,4) a4 from w1;
++----+----+----+--------+
+| a1 | a2 | a3 | a4     |
++----+----+----+--------+
+| a1 | b2 | c3 | edf100 |
++----+----+----+--------+
+1 row in set (0.01 sec)
+
+
+```
+
+
+
+## set_var hint
+
+```SQL
+mysql> desc with w1 as (select t.* from t_group t)
+    -> select * from w1 join w1 w2 on w1.emp_no=w2.emp_no;
++----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+---------------------------------------------
+| id | select_type | table | partitions | type | possible_keys | key  | key_len | ref  | rows | filtered | Extra                                              |
++----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+---------------------------------------------
+|  1 | SIMPLE      | t     | NULL       | ALL  | NULL          | NULL | NULL    | NULL |   11 |   100.00 | NULL                                               |
+|  1 | SIMPLE      | t     | NULL       | ALL  | NULL          | NULL | NULL    | NULL |   11 |    10.00 | Using where; Using join buffer (Block Nested Loop) |
++----+-------------+-------+------------+------+---------------+------+---------+------+------+----------+---------------------------------------------
+2 rows in set, 1 warning (0.00 sec)
+
+mysql> desc with w1 as (select t.* from t_group t)
+    -> select /*+ set_var(optimizer_switch='derived_merge=off') */ * from w1 join w1 w2 on w1.emp_no=w2.emp_no;
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+| id | select_type | table      | partitions | type | possible_keys | key         | key_len | ref       | rows | filtered | Extra |
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+|  1 | PRIMARY     | <derived2> | NULL       | ALL  | NULL          | NULL        | NULL    | NULL      |   11 |   100.00 | NULL  |
+|  1 | PRIMARY     | <derived2> | NULL       | ref  | <auto_key0>   | <auto_key0> | 4       | w1.emp_no |    2 |   100.00 | NULL  |
+|  2 | DERIVED     | t          | NULL       | ALL  | NULL          | NULL        | NULL    | NULL      |   11 |   100.00 | NULL  |
++----+-------------+------------+------------+------+---------------+-------------+---------+-----------+------+----------+-------+
+3 rows in set, 1 warning (0.01 sec)
+```
+
+
+
+## 创建索引可以选择visible or invisible
+
+```sql
+mysql> show index from t_group;
+Empty set (0.01 sec)
+
+mysql> create index idx1 on t_group(emp_no) invisible;
+Query OK, 0 rows affected (0.02 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+mysql> desc select * from t_group where emp_no=10001;
++----+-------------+---------+------------+------+---------------+------+---------+------+------+----------+-------------+
+| id | select_type | table   | partitions | type | possible_keys | key  | key_len | ref  | rows | filtered | Extra       |
++----+-------------+---------+------------+------+---------------+------+---------+------+------+----------+-------------+
+|  1 | SIMPLE      | t_group | NULL       | ALL  | NULL          | NULL | NULL    | NULL |   11 |    10.00 | Using where |
++----+-------------+---------+------------+------+---------------+------+---------+------+------+----------+-------------+
+1 row in set, 1 warning (0.00 sec)
+
+无法强制使用invisible的索引
+mysql> desc select * from t_group force index(idx1) where emp_no=10001;
+ERROR 1176 (42000): Key 'idx1' doesn't exist in table 't_group'
+
+打开开关，可以使用
+mysql> desc select /*+ set_var(optimizer_switch='use_invisible_indexes=on') */ * from t_group where emp_no=10001;
++----+-------------+---------+------------+------+---------------+------+---------+-------+------+----------+-------+
+| id | select_type | table   | partitions | type | possible_keys | key  | key_len | ref   | rows | filtered | Extra |
++----+-------------+---------+------------+------+---------------+------+---------+-------+------+----------+-------+
+|  1 | SIMPLE      | t_group | NULL       | ref  | idx1          | idx1 | 4       | const |    1 |   100.00 | NULL  |
++----+-------------+---------+------------+------+---------------+------+---------+-------+------+----------+-------+
+1 row in set, 1 warning (0.00 sec)
+```
+
+
+
+## 支持创建desc索引(反键索引)
+
+## index skip scan
+
+idx on (f1,f2)  其中f1 的重复值多，选择率低，使用skip index速度较快
+
+触发限制条件：
+
+1 必须是联合索引
+
+2 只能用于一张表
+
+3 不能用于distinct 、group by
+
+4 不能回表
+
+```sql
+mysql> desc select dept_no,emp_no from dept_emp2 where emp_no=10002;
++----+-------------+-----------+------------+-------+---------------+-------------+---------+------+-------+----------+----------------------------------------+
+| id | select_type | table     | partitions | type  | possible_keys | key         | key_len | ref  | rows  | filtered | Extra                                  |
++----+-------------+-----------+------------+-------+---------------+-------------+---------+------+-------+----------+----------------------------------------+
+|  1 | SIMPLE      | dept_emp2 | NULL       | range | ix_dept_emp   | ix_dept_emp | 16      | NULL | 33100 |   100.00 | Using where; Using index for skip scan |
++----+-------------+-----------+------------+-------+---------------+-------------+---------+------+-------+----------+----------------------------------------+
+1 row in set, 1 warning (0.00 sec)
+
+优化select * from dept_emp2 where emp_no=10002; 使得其使用skip scan
+mysql> desc select  d2.* from (
+    -> select dept_no,emp_no from dept_emp2 where emp_no=10002 limit 1000000) d1 
+    ----加上limt避免试图合并
+    -> straight_join dept_emp2 d2 on d1.emp_no=d2.emp_no and d1.dept_no=d2.dept_no;
++----+-------------+------------+------------+-------+---------------+-------------+---------+----------------------+-------+----------+----------------------------------------+
+| id | select_type | table      | partitions | type  | possible_keys | key         | key_len | ref                  | rows  | filtered | Extra                                  |
++----+-------------+------------+------------+-------+---------------+-------------+---------+----------------------+-------+----------+----------------------------------------+
+|  1 | PRIMARY     | <derived2> | NULL       | ALL   | NULL          | NULL        | NULL    | NULL                 | 33100 |   100.00 | NULL                                   |
+|  1 | PRIMARY     | d2         | NULL       | ref   | ix_dept_emp   | ix_dept_emp | 16      | d1.dept_no,d1.emp_no |     1 |   100.00 | NULL                                   |
+|  2 | DERIVED     | dept_emp2  | NULL       | range | ix_dept_emp   | ix_dept_emp | 16      | NULL                 | 33100 |   100.00 | Using where; Using index for skip scan |
++----+-------------+------------+------------+-------+---------------+-------------+---------+----------------------+-------+----------+----------------------------------------+
+3 rows in set, 1 warning (0.00 sec)
+
+
+两者的速度比：
+mysql> select  d2.* from ( select dept_no,emp_no from dept_emp2 where emp_no=10002 limit 1000000) d1 straight_join dept_emp2 d2 on d1.emp_no=d2.emp_no and d1.dept_no=d2.dept_no;
++--------+---------+------------+------------+
+| emp_no | dept_no | from_date  | to_date    |
++--------+---------+------------+------------+
+|  10002 | d007    | 1996-08-03 | 9999-01-01 |
++--------+---------+------------+------------+
+1 row in set (0.14 sec)
+
+mysql> select  d2.* from ( select dept_no,emp_no from dept_emp2 where emp_no=10002 ) d1 straight_join dept_emp2 d2 on d1.emp_no=d2.emp_no and d1.dept_no=d2.dept_no;
++--------+---------+------------+------------+
+| emp_no | dept_no | from_date  | to_date    |
++--------+---------+------------+------------+
+|  10002 | d007    | 1996-08-03 | 9999-01-01 |
++--------+---------+------------+------------+
+1 row in set (0.84 sec)
+```
+
+
+
+## 支持函数索引
+
+​    
